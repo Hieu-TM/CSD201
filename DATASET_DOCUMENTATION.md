@@ -99,14 +99,36 @@ Với FPR target = 1%:
 
 ## 5. Phân tích bộ nhớ: HT vs BF
 
+> **Cách đo bộ nhớ (cập nhật 2026-07-12):** benchmark báo **bộ nhớ đo thật** (`memory_kb`) cho cả hai
+> cấu trúc, dùng cùng một giao thức: `BenchmarkRunner` build cấu trúc bằng **streaming** (mỗi cấu trúc
+> giữ tham chiếu chuỗi của riêng nó), rồi lấy chênh lệch heap của JVM (`Runtime.totalMemory - freeMemory`)
+> giữa hai mốc `forceGC()` bao quanh pha build, **lấy min qua nhiều trial** để giảm nhiễu GC. Con số mô
+> hình lý thuyết (`memory_model_kb`) chỉ để **đối chứng**, không còn ghi đè số đo (trước đây HT báo
+> `max(measured, model)` với `model` cố định ~100 bytes/phần tử → luôn thắng, khiến "crossover" trở thành
+> tiền định thay vì quan sát thực nghiệm).
+>
+> - **Hash Table:** số **đo thật** là con số đáng tin; nó gồm cả `Node[]` + `Node` + `String` mà HT giữ
+>   sống. `memory_model_kb` (~100 bytes/phần tử) chỉ để so sánh, và ở N lớn measured ≈ model xác nhận mô
+>   hình hợp lý.
+> - **Bloom Filter:** vì `BitSet` quá nhỏ (cỡ KB < nhiễu GC), số **đo thật nhiễu mạnh ở N nhỏ**; với BF
+>   hãy đọc `memory_model_kb` = footprint `BitSet` **chính xác giải tích** (đóng gói word 64-bit), còn số
+>   đo chỉ để xác nhận bậc độ lớn. `BloomFilter` dùng `BitSet` (không phải `boolean[]` vốn tốn 1 byte/bit,
+>   gấp 8×) nên footprint thực ≈ lý thuyết m/8.
+> - **Crossover = sự kiện OOM thật:** HT nay OOM *trong lúc build cấu trúc* dưới cờ `-Xmx`, không phải
+>   trong lúc parse JSON. Vì vậy ngưỡng crossover là quan sát thực nghiệm, độc lập với con số bộ nhớ báo
+>   cáo.
+>
+> Bảng dưới là **con số lý thuyết** (dùng cho tính toán/thiết kế), HT ≈ 100 bytes/phần tử và BF ≈ 1.2
+> bytes/phần tử — đối chiếu với cột `memory_model_kb` trong `results/*.csv`.
+
 | N | BF (KB) | HT (KB) | HT/BF ratio | BF tiết kiệm |
 |---|---|---|---|---|
-| 1,000 | 1.2 | 37.8 | 32.3× | 96.9% |
-| 100,000 | 117.0 | 3,776 | 32.3× | 96.9% |
-| 1,000,000 | 1,170 | 37,760 | 32.3× | 96.9% |
-| 2,000,000 | 2,340 | 75,521 | 32.3× | 96.9% |
+| 1,000 | 1.2 | 97.7 | 83.5× | 98.8% |
+| 100,000 | 117.0 | 9,765.6 | 83.5× | 98.8% |
+| 1,000,000 | 1,170.1 | 97,656.2 | 83.5× | 98.8% |
+| 2,000,000 | 2,340.1 | 195,312.5 | 83.5× | 98.8% |
 
-**Kết luận:** BF tiết kiệm ~96.9% RAM so với HT ở mọi kích thước.
+**Kết luận:** BF tiết kiệm ~98.8% RAM so với HT ở mọi kích thước (tỷ lệ nén ~83.5×).
 
 ---
 
@@ -116,12 +138,12 @@ Với FPR target = 1%:
 
 | Budget | HT chứa tối đa | BF chứa tối đa | BF/HT |
 |---|---|---|---|
-| 4 MB | ~150K phần tử | ~3.5M phần tử | 23.3× |
-| 16 MB | ~600K phần tử | ~14M phần tử | 23.3× |
-| 64 MB | ~2.4M phần tử | ~56M phần tử | 23.3× |
-| 256 MB | ~9.6M phần tử | ~224M phần tử | 23.3× |
+| 4 MB | ~42K phần tử | ~3.5M phần tử | 83.3× |
+| 16 MB | ~168K phần tử | ~14M phần tử | 83.3× |
+| 64 MB | ~671K phần tử | ~56M phần tử | 83.3× |
+| 256 MB | ~2.68M phần tử | ~224M phần tử | 83.3× |
 
-→ **Crossover Point dự kiến với budget 16MB: N ≈ 600,000** (ở đó HT bắt đầu swap/OOM, BF vẫn vận hành bình thường)
+→ **Crossover Point dự kiến với budget 16MB: N ≈ 168,000** (ở đó HT bắt đầu OOM; BF vẫn vận hành bình thường tới hàng chục triệu phần tử). Con số thực nghiệm đo được sẽ cao hơn ngưỡng lý thuyết này một chút vì bản thân việc nạp JSON và overhead JVM cũng chiếm một phần ngân sách bộ nhớ.
 
 ---
 

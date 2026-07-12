@@ -10,8 +10,10 @@ public class BenchmarkResult {
     public int memoryBudgetMb;         // JVM Max Memory limit (MB)
     public double insertTimeMs;        // Total insert time (milliseconds)
     public double lookupTimeMs;        // Total lookup time (milliseconds)
-    public double throughputOpsPerSec; // Lookup operations per second
-    public long memoryBytes;           // Estimated memory usage (bytes)
+    public double throughputOpsPerSec; // Lookup operations per second (median-based)
+    public double throughputStdevPct;  // Throughput variability across timed passes (%)
+    public long memoryBytes;           // Real measured heap footprint (Runtime delta, bytes)
+    public long memoryModelBytes;      // Analytic model footprint, for cross-check (bytes)
     public boolean isOOM;              // Whether OutOfMemoryError occurred
 
     // ─── Hash Table specific ───────────────────────────
@@ -35,7 +37,8 @@ public class BenchmarkResult {
      * Format this result as a CSV header line for Hash Table.
      */
     public static String htCsvHeader() {
-        return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,memory_bytes,memory_kb," +
+        return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
+               "memory_bytes,memory_kb,memory_model_kb," +
                "collision_count,collision_rate,max_chain_len,avg_chain_len," +
                "table_capacity,resize_count,is_oom";
     }
@@ -44,9 +47,9 @@ public class BenchmarkResult {
      * Format this result as a CSV data line for Hash Table.
      */
     public String htCsvLine() {
-        return String.format("%d,%d,%.2f,%.2f,%.0f,%d,%.1f,%d,%.4f,%d,%.2f,%d,%d,%b",
-                memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec,
-                memoryBytes, memoryBytes / 1024.0,
+        return String.format("%d,%d,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%.1f,%d,%.4f,%d,%.2f,%d,%d,%b",
+                memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,
+                memoryBytes, memoryBytes / 1024.0, memoryModelBytes / 1024.0,
                 collisionCount, collisionRate, maxChainLength, avgChainLength,
                 tableCapacity, resizeCount, isOOM);
     }
@@ -55,7 +58,8 @@ public class BenchmarkResult {
      * Format this result as a CSV header line for Bloom Filter.
      */
     public static String bfCsvHeader() {
-        return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,memory_bytes,memory_kb," +
+        return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
+               "memory_bytes,memory_kb,memory_model_kb," +
                "m_bits,k_hashes,fpr_empirical,fpr_theoretical," +
                "false_positive_count,negative_query_count,fill_ratio,is_oom";
     }
@@ -64,9 +68,9 @@ public class BenchmarkResult {
      * Format this result as a CSV data line for Bloom Filter.
      */
     public String bfCsvLine() {
-        return String.format("%d,%d,%.2f,%.2f,%.0f,%d,%.1f,%d,%d,%.6f,%.6f,%d,%d,%.4f,%b",
-                memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec,
-                memoryBytes, memoryBytes / 1024.0,
+        return String.format("%d,%d,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%.1f,%d,%d,%.6f,%.6f,%d,%d,%.4f,%b",
+                memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,
+                memoryBytes, memoryBytes / 1024.0, memoryModelBytes / 1024.0,
                 mBits, kHashes, fprEmpirical, fprTheoretical,
                 falsePositiveCount, negativeQueryCount, fillRatio, isOOM);
     }
@@ -75,7 +79,7 @@ public class BenchmarkResult {
      * Format this result as a summary CSV header.
      */
     public static String summaryCsvHeader() {
-        return "memory_budget_mb,n,structure,insert_time_ms,lookup_time_ms,throughput_ops_sec," +
+        return "memory_budget_mb,n,structure,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
                "memory_kb,collision_rate,fpr_empirical,is_oom";
     }
 
@@ -83,8 +87,8 @@ public class BenchmarkResult {
      * Format this result as a summary CSV line.
      */
     public String summaryCsvLine() {
-        return String.format("%d,%d,%s,%.2f,%.2f,%.0f,%.1f,%.4f,%.6f,%b",
-                memoryBudgetMb, n, dataStructure, insertTimeMs, lookupTimeMs, throughputOpsPerSec,
+        return String.format("%d,%d,%s,%.2f,%.2f,%.0f,%.1f,%.1f,%.4f,%.6f,%b",
+                memoryBudgetMb, n, dataStructure, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,
                 memoryBytes / 1024.0, collisionRate, fprEmpirical, isOOM);
     }
 
@@ -95,8 +99,10 @@ public class BenchmarkResult {
         sb.append(String.format("  %-18s: %,d\n", "N", n));
         sb.append(String.format("  %-18s: %.2f ms\n", "Insert Time", insertTimeMs));
         sb.append(String.format("  %-18s: %.2f ms\n", "Lookup Time", lookupTimeMs));
-        sb.append(String.format("  %-18s: %,.0f ops/sec\n", "Throughput", throughputOpsPerSec));
-        sb.append(String.format("  %-18s: %,.1f KB\n", "Memory", memoryBytes / 1024.0));
+        sb.append(String.format("  %-18s: %,.0f ops/sec (±%.1f%%)\n", "Throughput",
+                throughputOpsPerSec, throughputStdevPct));
+        sb.append(String.format("  %-18s: %,.1f KB measured (model %,.1f KB)\n", "Memory",
+                memoryBytes / 1024.0, memoryModelBytes / 1024.0));
 
         if ("HashTable".equals(dataStructure)) {
             sb.append(String.format("  %-18s: %,d (rate=%.2f%%)\n", "Collisions",

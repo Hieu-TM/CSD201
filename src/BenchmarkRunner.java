@@ -1,6 +1,7 @@
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.Predicate;
 
 /**
  * Main benchmark runner: Hash Table (Separate Chaining) vs Bloom Filter.
@@ -34,8 +35,29 @@ public class BenchmarkRunner {
     // Bloom Filter target FPR
     private static final double BF_TARGET_FPR = 0.01; // 1%
 
-    // Number of warmup iterations for lookup timing
-    private static final int WARMUP_ITERATIONS = 2;
+    // Number of warmup iterations for lookup timing (enough to let the JIT
+    // compile the lookup loop to C2 before any timed pass).
+    private static final int WARMUP_ITERATIONS = 10;
+
+    // Number of fresh-build trials for insert timing / memory (averaged / min)
+    private static final int INSERT_TRIALS = 3;
+
+    // Number of timed passes for lookup timing (median taken)
+    private static final int LOOKUP_TRIALS = 7;
+
+    // Each timed lookup pass repeats the mixed-query set until it performs at
+    // least this many operations, so the measured interval is tens of ms —
+    // well above timer/GC noise. Without this, a single 5,000-query pass takes
+    // ~0.2 ms and throughput swings ~10x on pure measurement noise.
+    private static final int TARGET_LOOKUP_OPS = 2_000_000;
+
+    // How many inserted keys to sample for the correctness check
+    private static final int VERIFY_SAMPLE_SIZE = 1000;
+
+    // Blackhole: consuming lookup results here prevents the JIT from proving
+    // the lookup calls are side-effect-free and eliminating the whole loop
+    // (dead-code elimination), which otherwise inflates throughput arbitrarily.
+    static volatile long BLACKHOLE;
 
     // Memory budget being tested
     private static int memoryBudgetMb = 256;
@@ -90,48 +112,29 @@ public class BenchmarkRunner {
                 continue;
             }
 
-            // Load dataset
-            System.out.printf("  Loading %s ...%n", datasetFile);
-            JsonParser parser;
-            try {
-                parser = new JsonParser().parse(datasetFile);
-            } catch (IOException e) {
-                System.out.printf("  ✗ Error reading file: %s%n", e.getMessage());
-                continue;
-            } catch (OutOfMemoryError e) {
-                System.out.printf("  ✗ OOM while loading JSON (N=%,d)%n", n);
-                // Record OOM for both
-                BenchmarkResult htOom = createOOMResult("HashTable", n);
-                BenchmarkResult bfOom = createOOMResult("BloomFilter", n);
-                htResults.add(htOom);
-                bfResults.add(bfOom);
-                continue;
-            }
-
-            List<String> inserted = parser.getInserted();
-            List<String> negatives = parser.getNegativeQueries();
-            List<String> mixed = parser.getMixedQueries();
-
-            System.out.printf("  Loaded: %,d inserted, %,d negatives, %,d mixed%n",
-                    inserted.size(), negatives.size(), mixed.size());
-
-            // ─── Hash Table Benchmark ───────────────────────
-            System.out.println("\n  [HT] Hash Table Separate Chaining:");
-            BenchmarkResult htResult = benchmarkHashTable(inserted, mixed, n);
-            htResults.add(htResult);
-            System.out.println(htResult);
-
-            // Force GC between runs
-            forceGC();
-
-            // ─── Bloom Filter Benchmark ─────────────────────
-            System.out.println("  [BF] Bloom Filter (k=" + calculateK(n) + ", m=" + 
+            // ─── Bloom Filter Benchmark (streamed — never holds the full
+            // N-element "inserted" list in memory) ──────────────────────
+            // Benchmarked first and independently of the Hash Table so its
+            // OOM threshold reflects its own memory footprint, not the cost
+            // of materializing a shared dataset list.
+            System.out.println("\n  [BF] Bloom Filter (k=" + calculateK(n) + ", m=" +
                     String.format("%,d", calculateM(n)) + " bits):");
-            BenchmarkResult bfResult = benchmarkBloomFilter(inserted, negatives, mixed, n);
+            BenchmarkResult bfResult = benchmarkBloomFilterStreaming(datasetFile, n);
             bfResults.add(bfResult);
             System.out.println(bfResult);
 
-            // Force GC after each size
+            forceGC();
+
+            // ─── Hash Table Benchmark (streamed) ─────────────
+            // Built via the same streaming path as the Bloom Filter so the two
+            // are compared on equal footing: the Hash Table's OOM threshold now
+            // reflects its own footprint (Node[] + nodes + retained key
+            // Strings), not the extra cost of materializing a full parsed list.
+            System.out.println("\n  [HT] Hash Table Separate Chaining:");
+            BenchmarkResult htResult = benchmarkHashTableStreaming(datasetFile, n);
+            htResults.add(htResult);
+            System.out.println(htResult);
+
             forceGC();
         }
 
@@ -151,10 +154,18 @@ public class BenchmarkRunner {
                 new File(RESULTS_DIR).getAbsolutePath());
     }
 
-    // ─── Hash Table Benchmark ──────────────────────────────────
+    // ─── Hash Table Benchmark (streamed) ───────────────────────
 
-    private static BenchmarkResult benchmarkHashTable(List<String> inserted, 
-            List<String> mixed, int n) {
+    /**
+     * Benchmarks the Hash Table by streaming the dataset file directly, exactly
+     * like {@link #benchmarkBloomFilterStreaming}. The Hash Table retains every
+     * key as a live object, so its measured heap footprint (and therefore its
+     * OOM threshold) genuinely includes those Strings — but the source list is
+     * never materialized separately, so the OOM reflects the structure itself
+     * rather than the cost of a full JSON parse. Memory is the real measured
+     * Runtime heap delta (min over trials), not a fixed per-element model.
+     */
+    private static BenchmarkResult benchmarkHashTableStreaming(String datasetFile, int n) {
         BenchmarkResult result = new BenchmarkResult();
         result.dataStructure = "HashTable";
         result.n = n;
@@ -162,30 +173,46 @@ public class BenchmarkRunner {
         result.isOOM = false;
 
         try {
-            // Measure memory before
-            forceGC();
-            long memBefore = usedMemory();
+            // ─── Pass A: collect the fixed-size query list + a verify sample.
+            // These are kept live, so they sit in BOTH the baseline and the
+            // post-build snapshot and cancel out of the memory delta.
+            final List<String> sample = new ArrayList<>();
+            JsonParser.StreamedQueries streamed = JsonParser.streamParse(datasetFile, key -> {
+                if (sample.size() < VERIFY_SAMPLE_SIZE) sample.add(key);
+            });
+            List<String> mixed = streamed.mixed; // negatives unused for the Hash Table
 
-            // Create and populate hash table
-            HashTableSC ht = new HashTableSC(n);
+            // ─── INSERT benchmark + real memory measurement.
+            // Rebuild fresh INSERT_TRIALS times (re-streaming the file); average
+            // the insert time and take the MIN measured heap delta (least GC
+            // noise). Only the last build is kept for lookup/collision stats.
+            HashTableSC ht = null;
+            double insertTimeTotal = 0;
+            long measuredMemMin = Long.MAX_VALUE;
+            for (int t = 0; t < INSERT_TRIALS; t++) {
+                ht = null;            // release the previous build first
+                forceGC();
+                long baseline = usedMemory();
 
-            // ─── INSERT benchmark ───
-            long insertStart = System.nanoTime();
-            for (String key : inserted) {
-                ht.insert(key);
+                final HashTableSC h = new HashTableSC(n);
+                final long[] insertNanos = {0};
+                JsonParser.streamParse(datasetFile, key -> {
+                    long t0 = System.nanoTime();
+                    h.insert(key);
+                    insertNanos[0] += System.nanoTime() - t0;
+                });
+                insertTimeTotal += insertNanos[0] / 1_000_000.0;
+
+                forceGC();
+                long after = usedMemory();
+                measuredMemMin = Math.min(measuredMemMin, after - baseline);
+                ht = h;               // keep this build
             }
-            long insertEnd = System.nanoTime();
-            result.insertTimeMs = (insertEnd - insertStart) / 1_000_000.0;
+            result.insertTimeMs = insertTimeTotal / INSERT_TRIALS;
+            result.memoryBytes = Math.max(0, measuredMemMin);
+            result.memoryModelBytes = ht.estimateMemoryBytes();
 
-            // Measure memory after insert
-            forceGC();
-            long memAfter = usedMemory();
-            long measuredMem = memAfter - memBefore;
-            long estimatedMem = ht.estimateMemoryBytes();
-            // Use the larger of measured vs estimated (measured can be noisy)
-            result.memoryBytes = Math.max(measuredMem, estimatedMem);
-
-            // Collision stats
+            // Collision stats (from the retained build)
             result.collisionCount = ht.getCollisionCount();
             result.collisionRate = ht.getCollisionRate();
             result.maxChainLength = ht.getMaxChainLength();
@@ -193,46 +220,45 @@ public class BenchmarkRunner {
             result.tableCapacity = ht.getCapacity();
             result.resizeCount = ht.getResizeCount();
 
-            // ─── LOOKUP benchmark (warmup + timed) ───
-            // Warmup
-            for (int w = 0; w < WARMUP_ITERATIONS; w++) {
-                for (String key : mixed) {
-                    ht.lookup(key);
-                }
-            }
+            // ─── LOOKUP benchmark (large workload, blackholed, median) ───
+            final HashTableSC htRef = ht;
+            double[] lk = measureLookup(htRef::lookup, mixed);
+            result.lookupTimeMs = lk[0];
+            result.throughputStdevPct = lk[1];
+            result.throughputOpsPerSec = lk[2];
 
-            // Timed lookup
-            long lookupStart = System.nanoTime();
-            for (String key : mixed) {
-                ht.lookup(key);
-            }
-            long lookupEnd = System.nanoTime();
-            result.lookupTimeMs = (lookupEnd - lookupStart) / 1_000_000.0;
-            result.throughputOpsPerSec = mixed.size() / (result.lookupTimeMs / 1000.0);
-
-            // Verify correctness: all inserted keys should be found
-            int verifyCount = Math.min(100, inserted.size());
-            for (int i = 0; i < verifyCount; i++) {
-                if (!ht.lookup(inserted.get(i))) {
-                    System.out.printf("  ⚠ CORRECTNESS ERROR: key '%s' not found!%n", 
-                            inserted.get(i));
+            // Verify correctness: sampled inserted keys should be found
+            for (String key : sample) {
+                if (!ht.lookup(key)) {
+                    System.out.printf("  ⚠ CORRECTNESS ERROR: key '%s' not found!%n", key);
                     break;
                 }
             }
 
+        } catch (IOException e) {
+            System.out.printf("  ✗ Error streaming file: %s%n", e.getMessage());
         } catch (OutOfMemoryError e) {
             result.isOOM = true;
             result.memoryBytes = Runtime.getRuntime().maxMemory();
-            System.out.printf("  ✗ OOM at N=%,d%n", n);
+            System.out.printf("  ✗ OOM at N=%,d (during Hash Table build)%n", n);
         }
 
         return result;
     }
 
-    // ─── Bloom Filter Benchmark ────────────────────────────────
+    // ─── Bloom Filter Benchmark (streamed) ─────────────────────
 
-    private static BenchmarkResult benchmarkBloomFilter(List<String> inserted,
-            List<String> negatives, List<String> mixed, int n) {
+    /**
+     * Benchmarks the Bloom Filter by streaming the dataset file directly
+     * (see {@link JsonParser#streamParse}) instead of using a pre-parsed
+     * "inserted" list. This keeps the Bloom Filter's memory footprint (and
+     * therefore its OOM threshold) independent of the Hash Table benchmark's
+     * dataset-loading cost — previously both structures shared one parsed
+     * list, so at low memory budgets the OOM always happened during JSON
+     * parsing before either structure was tested, making it look like both
+     * structures failed together regardless of their actual memory models.
+     */
+    private static BenchmarkResult benchmarkBloomFilterStreaming(String datasetFile, int n) {
         BenchmarkResult result = new BenchmarkResult();
         result.dataStructure = "BloomFilter";
         result.n = n;
@@ -240,39 +266,64 @@ public class BenchmarkRunner {
         result.isOOM = false;
 
         try {
-            // Create Bloom Filter
-            BloomFilter bf = new BloomFilter(n, BF_TARGET_FPR);
+            // ─── Pass A: collect the fixed-size query lists + a verify sample
+            // (kept live, so they cancel out of the memory delta below).
+            final List<String> sample = new ArrayList<>();
+            JsonParser.StreamedQueries streamed = JsonParser.streamParse(datasetFile, key -> {
+                if (sample.size() < VERIFY_SAMPLE_SIZE) sample.add(key);
+            });
+            List<String> negatives = streamed.negatives;
+            List<String> mixed = streamed.mixed;
+            List<String> insertedSample = sample;
+
+            // ─── INSERT benchmark + memory measurement, using the SAME
+            // protocol as the Hash Table so both are compared on one basis:
+            // rebuild fresh INSERT_TRIALS times (re-streaming), average the
+            // insert() time, and take the MIN measured heap delta. Only
+            // insert() time is measured (I/O and parsing excluded). Because the
+            // Bloom Filter does not retain the key Strings, this delta captures
+            // just the BitSet.
+            BloomFilter bf = null;
+            double insertTimeTotal = 0;
+            long measuredMemMin = Long.MAX_VALUE;
+            for (int t = 0; t < INSERT_TRIALS; t++) {
+                bf = null;            // release the previous build first
+                forceGC();
+                long baseline = usedMemory();
+
+                final BloomFilter b = new BloomFilter(n, BF_TARGET_FPR);
+                final long[] insertNanos = {0};
+                JsonParser.streamParse(datasetFile, key -> {
+                    long t0 = System.nanoTime();
+                    b.insert(key);
+                    insertNanos[0] += System.nanoTime() - t0;
+                });
+                insertTimeTotal += insertNanos[0] / 1_000_000.0;
+
+                forceGC();
+                long after = usedMemory();
+                measuredMemMin = Math.min(measuredMemMin, after - baseline);
+                bf = b;               // keep this build
+            }
+            result.insertTimeMs = insertTimeTotal / INSERT_TRIALS;
             result.mBits = bf.getM();
             result.kHashes = bf.getK();
 
-            // ─── INSERT benchmark ───
-            long insertStart = System.nanoTime();
-            for (String key : inserted) {
-                bf.insert(key);
-            }
-            long insertEnd = System.nanoTime();
-            result.insertTimeMs = (insertEnd - insertStart) / 1_000_000.0;
-
-            // Memory
-            result.memoryBytes = bf.estimateMemoryBytes();
+            // Memory: measured heap delta (min over trials), same basis as the
+            // Hash Table. The measured column is noise-dominated at small N
+            // because the BitSet is tiny (~KB < GC noise); the analytic
+            // BitSet footprint (memoryModelBytes) is exact and is the figure to
+            // trust for the Bloom Filter — see DATASET_DOCUMENTATION.md §5.
+            result.memoryBytes = Math.max(0, measuredMemMin);
+            result.memoryModelBytes = bf.actualJvmMemoryBytes();
             result.fillRatio = bf.getFillRatio();
 
-            // ─── LOOKUP benchmark (warmup + timed) ───
-            // Warmup
-            for (int w = 0; w < WARMUP_ITERATIONS; w++) {
-                for (String key : mixed) {
-                    bf.lookup(key);
-                }
-            }
-
-            // Timed lookup
-            long lookupStart = System.nanoTime();
-            for (String key : mixed) {
-                bf.lookup(key);
-            }
-            long lookupEnd = System.nanoTime();
-            result.lookupTimeMs = (lookupEnd - lookupStart) / 1_000_000.0;
-            result.throughputOpsPerSec = mixed.size() / (result.lookupTimeMs / 1000.0);
+            // ─── LOOKUP benchmark (large workload, blackholed, median) ───
+            final BloomFilter bfRef = bf;
+            double[] lk = measureLookup(bfRef::lookup, mixed);
+            result.lookupTimeMs = lk[0];
+            result.throughputStdevPct = lk[1];
+            result.throughputOpsPerSec = lk[2];
 
             // ─── FPR measurement using pure negatives ───
             result.negativeQueryCount = negatives.size();
@@ -286,16 +337,16 @@ public class BenchmarkRunner {
             result.fprEmpirical = (double) fp / negatives.size();
             result.fprTheoretical = bf.getTheoreticalFPR();
 
-            // Verify: no false negatives (all inserted must be found)
-            int verifyCount = Math.min(100, inserted.size());
-            for (int i = 0; i < verifyCount; i++) {
-                if (!bf.lookup(inserted.get(i))) {
-                    System.out.printf("  ⚠ FALSE NEGATIVE ERROR: key '%s' not found!%n",
-                            inserted.get(i));
+            // Verify: no false negatives among the sampled inserted keys
+            for (String key : insertedSample) {
+                if (!bf.lookup(key)) {
+                    System.out.printf("  ⚠ FALSE NEGATIVE ERROR: key '%s' not found!%n", key);
                     break;
                 }
             }
 
+        } catch (IOException e) {
+            System.out.printf("  ✗ Error streaming file: %s%n", e.getMessage());
         } catch (OutOfMemoryError e) {
             result.isOOM = true;
             result.memoryBytes = Runtime.getRuntime().maxMemory();
@@ -407,20 +458,75 @@ public class BenchmarkRunner {
 
     // ─── Utility Methods ───────────────────────────────────────
 
-    private static BenchmarkResult createOOMResult(String ds, int n) {
-        BenchmarkResult r = new BenchmarkResult();
-        r.dataStructure = ds;
-        r.n = n;
-        r.memoryBudgetMb = memoryBudgetMb;
-        r.isOOM = true;
-        r.memoryBytes = Runtime.getRuntime().maxMemory();
-        return r;
-    }
-
     private static void forceGC() {
         System.gc();
         System.gc();
         try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    }
+
+    /**
+     * Times a lookup workload robustly and returns
+     * {@code [perPassMs, throughputStdevPct, throughputOpsPerSec]}.
+     *
+     * Each timed pass repeats the mixed-query set enough times to perform at
+     * least {@link #TARGET_LOOKUP_OPS} operations, so the interval is well above
+     * timer/GC noise. Results are consumed into {@link #BLACKHOLE} so the JIT
+     * cannot eliminate the loop. Throughput is derived from the MEDIAN pass
+     * (robust to a single GC pause); the reported per-pass time is normalized
+     * back to one sweep of {@code mixed} so it stays comparable across N.
+     */
+    private static double[] measureLookup(Predicate<String> lookup, List<String> mixed) {
+        int size = Math.max(1, mixed.size());
+        int repeats = Math.max(1, TARGET_LOOKUP_OPS / size);
+
+        long sink = 0;
+
+        // Warmup (untimed) — trigger JIT compilation of the lookup loop.
+        for (int w = 0; w < WARMUP_ITERATIONS; w++) {
+            for (String key : mixed) {
+                sink += lookup.test(key) ? 1 : 0;
+            }
+        }
+
+        double[] passMs = new double[LOOKUP_TRIALS];
+        for (int t = 0; t < LOOKUP_TRIALS; t++) {
+            long start = System.nanoTime();
+            for (int r = 0; r < repeats; r++) {
+                for (String key : mixed) {
+                    sink += lookup.test(key) ? 1 : 0;
+                }
+            }
+            long end = System.nanoTime();
+            passMs[t] = (end - start) / 1_000_000.0;
+        }
+        BLACKHOLE = sink;
+
+        double medianFullMs = median(passMs);
+        double perPassMs = medianFullMs / repeats;        // one sweep of `mixed`
+        double throughput = size / (perPassMs / 1000.0);  // ops/sec
+        double stdevPct = stdevPct(passMs);
+
+        return new double[]{perPassMs, stdevPct, throughput};
+    }
+
+    private static double median(double[] values) {
+        double[] copy = values.clone();
+        Arrays.sort(copy);
+        int mid = copy.length / 2;
+        return copy.length % 2 == 0 ? (copy[mid - 1] + copy[mid]) / 2.0 : copy[mid];
+    }
+
+    /** Sample standard deviation as a percentage of the mean. */
+    private static double stdevPct(double[] values) {
+        if (values.length < 2) return 0.0;
+        double mean = 0;
+        for (double v : values) mean += v;
+        mean /= values.length;
+        if (mean == 0) return 0.0;
+        double sumSq = 0;
+        for (double v : values) sumSq += (v - mean) * (v - mean);
+        double stdev = Math.sqrt(sumSq / (values.length - 1));
+        return stdev / mean * 100.0;
     }
 
     private static long usedMemory() {

@@ -120,14 +120,17 @@ def print_theory_tables():
         print(f"{n:>10,} | {m:>12,} | {m/8/1024:>8.1f} | {k:>3} | {fpr*100:>11.4f}%")
 
     print("\n" + "="*70)
-    print("  MEMORY BUDGET: BF vs HT (HT ≈ 28 bytes/elem, BF ≈ 1.2 bytes/elem)")
+    print("  MEMORY BUDGET: BF vs HT (HT ≈ 100 bytes/elem, BF ≈ 1.2 bytes/elem)")
     print("="*70)
     print(f"{'N':>10} | {'BF (KB)':>8} | {'HT (KB)':>8} | {'Ratio':>8} | {'BF saves':>10}")
     print("-"*55)
     for n in BENCHMARK_SIZES:
         m, k, _ = bloom_params(n)
         bf_kb = m/8/1024
-        ht_kb = (n * 28) / 1024
+        # 100 bytes/elem = HashTableSC.estimateMemoryBytes() model: table
+        # array ref (~10.7B, capacity/loadfactor-adjusted) + node object
+        # (32B) + String object (~52B incl. ~12-char payload) per element.
+        ht_kb = (n * 100) / 1024
         print(f"{n:>10,} | {bf_kb:>8.1f} | {ht_kb:>8.1f} | {ht_kb/bf_kb:>7.1f}x | {(1-bf_kb/ht_kb)*100:>9.1f}%")
 
 

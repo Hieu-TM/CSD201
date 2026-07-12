@@ -1,11 +1,13 @@
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Simple JSON parser for the RBL dataset files.
  * Parses fixed-format JSON without external libraries.
- * 
+ *
  * Expected JSON structure:
  * {
  *   "dataset_type": "username",
@@ -186,4 +188,136 @@ public class JsonParser {
     public List<String> getInserted() { return inserted; }
     public List<String> getNegativeQueries() { return negativeQueries; }
     public List<String> getMixedQueries() { return mixedQueries; }
+
+    // ─── Streaming parse (memory-efficient) ─────────────
+
+    /**
+     * Result of {@link #streamParse}: the small, fixed-size (5,000-element)
+     * query lists. The "inserted" array is NOT materialized here — its
+     * elements are pushed one at a time to the caller-supplied consumer.
+     */
+    public static class StreamedQueries {
+        public final List<String> negatives;
+        public final List<String> mixed;
+        StreamedQueries(List<String> negatives, List<String> mixed) {
+            this.negatives = negatives;
+            this.mixed = mixed;
+        }
+    }
+
+    /**
+     * Streams a dataset file without ever holding the full "inserted" array
+     * in memory: each element is pushed to {@code insertedSink} as soon as
+     * it's read, then discarded. Only "negative_queries" and "mixed_queries"
+     * (fixed at 5,000 elements each, regardless of N) are collected into
+     * lists, since their memory cost doesn't grow with the dataset size.
+     *
+     * This exists because {@link #parse} reads the whole file into a String
+     * and then a second time into a List&lt;String&gt;, which for large N can
+     * itself exceed a constrained memory budget before any data structure is
+     * even built — the exact scenario this method is meant to avoid for the
+     * Bloom Filter benchmark. Relies on "inserted" appearing before
+     * "negative_queries" before "mixed_queries" in the file, matching the
+     * field order generate_dataset.py writes; a differently-ordered dataset
+     * file would silently stream nothing for a key seen after its section
+     * is skipped.
+     *
+     * @param filePath      Path to the JSON dataset file
+     * @param insertedSink  Called once per element of the "inserted" array
+     */
+    public static StreamedQueries streamParse(String filePath, Consumer<String> insertedSink)
+            throws IOException {
+        List<String> negatives = new ArrayList<>();
+        List<String> mixed = new ArrayList<>();
+
+        // NOTE: deliberately NOT try-with-resources. Under a tight -Xmx an
+        // OutOfMemoryError thrown inside the body would trigger the auto-close,
+        // whose own failure the JVM tries to addSuppressed onto the (often
+        // preallocated, shared) OOM instance — which throws
+        // "IllegalArgumentException: Self-suppression not permitted" and masks
+        // the OOM so callers' catch(OutOfMemoryError) never sees it, crashing
+        // the whole run. Manual try/finally with a quiet close keeps the
+        // original OutOfMemoryError catchable.
+        Reader r = new BufferedReader(
+                new InputStreamReader(new FileInputStream(filePath), StandardCharsets.UTF_8),
+                1 << 16);
+        try {
+            StringBuilder keyBuf = new StringBuilder();
+            int c;
+            boolean done = false;
+            while (!done && (c = r.read()) != -1) {
+                if (c != '"') continue;
+
+                keyBuf.setLength(0);
+                int ch;
+                while ((ch = r.read()) != -1 && ch != '"') {
+                    if (ch == '\\') {
+                        int esc = r.read();
+                        if (esc == -1) break;
+                        keyBuf.append((char) esc);
+                    } else {
+                        keyBuf.append((char) ch);
+                    }
+                }
+                String key = keyBuf.toString();
+
+                if (key.equals("inserted")) {
+                    skipUntil(r, '[');
+                    streamStringArray(r, insertedSink);
+                } else if (key.equals("negative_queries")) {
+                    skipUntil(r, '[');
+                    streamStringArray(r, negatives::add);
+                } else if (key.equals("mixed_queries")) {
+                    skipUntil(r, '[');
+                    streamStringArray(r, mixed::add);
+                    done = true; // last field written by generate_dataset.py
+                }
+            }
+        } finally {
+            try { r.close(); } catch (Throwable ignored) { /* never mask an OOM */ }
+        }
+
+        return new StreamedQueries(negatives, mixed);
+    }
+
+    private static void skipUntil(Reader r, char target) throws IOException {
+        int c;
+        while ((c = r.read()) != -1) {
+            if (c == target) return;
+        }
+    }
+
+    /**
+     * Consumes a JSON string array from just after its opening '[' up to and
+     * including the matching ']', pushing each string element to sink as
+     * soon as it is parsed. Assumes a flat array of strings (no nesting),
+     * which matches every array in the dataset schema.
+     */
+    private static void streamStringArray(Reader r, Consumer<String> sink) throws IOException {
+        StringBuilder cur = new StringBuilder();
+        boolean inString = false;
+        int c;
+        while ((c = r.read()) != -1) {
+            char ch = (char) c;
+            if (!inString) {
+                if (ch == '"') {
+                    inString = true;
+                    cur.setLength(0);
+                } else if (ch == ']') {
+                    return;
+                }
+            } else {
+                if (ch == '\\') {
+                    int next = r.read();
+                    if (next == -1) break;
+                    cur.append((char) next);
+                } else if (ch == '"') {
+                    inString = false;
+                    sink.accept(cur.toString());
+                } else {
+                    cur.append(ch);
+                }
+            }
+        }
+    }
 }

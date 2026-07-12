@@ -1,19 +1,24 @@
+import java.util.BitSet;
+
 /**
  * Bloom Filter implementation using a bit array and k hash functions.
- * 
+ *
  * Parameters are calculated using the Mitzenmacher formula:
  *   m = ceil(-n * ln(p) / (ln2)^2)    — number of bits
  *   k = round((m/n) * ln(2))          — number of hash functions
- * 
+ *
  * Hash functions are generated using the double hashing technique:
  *   h_i(key) = (h1(key) + i * h2(key)) mod m
  * where h1 = Java hashCode, h2 = FNV-1a variant
- * 
+ *
  * Reference: Kirsch & Mitzenmacher, "Less Hashing, Same Performance"
  */
 public class BloomFilter {
 
-    private boolean[] bitArray;     // Bit array (using boolean[] for simplicity)
+    // BitSet packs bits into long[] words (1 bit/bit), unlike boolean[] which
+    // costs 1 BYTE per element in the JVM — that 8x gap previously made the
+    // measured memory ~8x worse than the theoretical m/8 figure reported.
+    private BitSet bitArray;
     private int m;                  // Number of bits
     private int k;                  // Number of hash functions
     private int insertedCount;      // Number of elements inserted
@@ -25,7 +30,7 @@ public class BloomFilter {
 
     /**
      * Create a Bloom Filter optimized for n elements with target FPR.
-     * 
+     *
      * @param n Expected number of elements
      * @param targetFPR Target false positive rate (e.g., 0.01 for 1%)
      */
@@ -33,7 +38,7 @@ public class BloomFilter {
         this.targetFPR = targetFPR;
         this.m = calculateM(n, targetFPR);
         this.k = calculateK(n, this.m);
-        this.bitArray = new boolean[this.m];
+        this.bitArray = new BitSet(this.m);
         this.insertedCount = 0;
     }
 
@@ -106,7 +111,7 @@ public class BloomFilter {
     public void insert(String key) {
         int[] positions = getHashPositions(key);
         for (int pos : positions) {
-            bitArray[pos] = true;
+            bitArray.set(pos);
         }
         insertedCount++;
     }
@@ -122,7 +127,7 @@ public class BloomFilter {
     public boolean lookup(String key) {
         int[] positions = getHashPositions(key);
         for (int pos : positions) {
-            if (!bitArray[pos]) {
+            if (!bitArray.get(pos)) {
                 return false; // Definitely not in set
             }
         }
@@ -133,11 +138,7 @@ public class BloomFilter {
      * Count how many bits are set in the bit array.
      */
     public int getBitsSet() {
-        int count = 0;
-        for (boolean bit : bitArray) {
-            if (bit) count++;
-        }
-        return count;
+        return bitArray.cardinality();
     }
 
     /**
@@ -164,21 +165,21 @@ public class BloomFilter {
     public double getTargetFPR() { return targetFPR; }
 
     /**
-     * Memory usage in bytes = m / 8 (bit array only).
-     * Note: boolean[] in Java actually uses 1 byte per element,
-     * so actual JVM memory = m bytes, but logical = m/8 bytes.
+     * Theoretical minimum memory in bytes = m / 8 (bit-packed, no overhead).
      */
     public long estimateMemoryBytes() {
-        // Logical memory: m bits = m/8 bytes
-        // Actual JVM memory: boolean[] uses 1 byte per element
-        // We report the logical size for fair comparison
         return (long) Math.ceil((double) m / 8);
     }
 
     /**
-     * Actual JVM memory (boolean[] uses 1 byte per element).
+     * Real JVM memory for the BitSet: bits are packed into long[] words
+     * (8 bytes/64 bits) plus a small fixed object/array-header overhead.
+     * This is what BenchmarkRunner reports, so HashTable and BloomFilter
+     * are compared on the same basis (real heap footprint), not a mix of
+     * measured-vs-theoretical numbers.
      */
     public long actualJvmMemoryBytes() {
-        return (long) m + 16; // array header overhead
+        long words = (long) Math.ceil((double) m / 64);
+        return words * 8 + 32; // 8 bytes/word + object/array header
     }
 }
