@@ -1,0 +1,33 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Membership testing---answering the question ``Does element $x$ belong to set $S$?''---is among the most fundamental operations in computer science. It underpins a wide range of systems including database query engines, network routers, web caches, spell checkers, and distributed storage systems~\citep{broder2004, chang2008}. Two classical data structures address this problem with starkly different resource profiles:
+
+\begin{enumerate}[leftmargin=*, label=(\roman*)]
+    \item \textbf{Hash Table} (with collision resolution): Provides exact, deterministic $O(1)$ amortized lookup with zero false positives, but requires storing every key in memory---resulting in substantial per-element overhead.
+    \item \textbf{Bloom Filter}~\citep{bloom1970}: A space-efficient probabilistic structure that encodes set membership in a compact bit array, reducing memory by orders of magnitude at the cost of a tunable false positive rate (FPR).
+\end{enumerate}
+
+While the theoretical trade-offs between these structures are well understood~\citep{mitzenmacher2017, cormen2022}, practitioners often lack concrete empirical guidance on \emph{when} the transition from one to the other becomes necessary. Specifically, given a fixed memory budget $M$, at what dataset scale $N$ does the Hash Table begin to degrade so severely that the Bloom Filter---despite its probabilistic nature---becomes the superior choice?
+
+\subsection{Research Question}
+\label{subsec:rq}
+
+We formalize this inquiry as follows:
+
+\begin{quote}
+\textit{Given a fixed memory budget $M$, at what dataset scale $N$ does a Hash Table with Separate Chaining begin to exhibit catastrophic performance degradation (due to RAM exhaustion and garbage collection pressure), and does a Bloom Filter configured with $k$ hash functions and $m$ bits demonstrate superior throughput at that point, with what empirical trade-off in false positive rate $p$?}
+\end{quote}
+
+\subsection{Contributions}
+
+This paper makes the following contributions:
+
+\begin{enumerate}[leftmargin=*, label=\arabic*.]
+    \item We design and implement a controlled, memory-constrained benchmark framework in Java that isolates the crossover behavior between Hash Table and Bloom Filter under hard JVM heap limits.
+    \item We identify concrete \emph{crossover points} for five memory tiers ($16$--$256$~MB), quantifying the dataset size $N$ at which Hash Table throughput collapses.
+    \item We empirically validate the Mitzenmacher formula for optimal Bloom Filter parameters, confirming that the measured FPR ($0.84\%$--$1.38\%$) closely tracks the theoretical target of $1\%$.
+    \item We quantify the memory compression ratio at approximately $83\times$, demonstrating that a Bloom Filter storing $N = 2{,}000{,}000$ elements consumes only $2.3$~MB versus ${\approx}191$~MB for the Hash Table.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. \Cref{sec:background} reviews the theoretical foundations of both data structures. \Cref{sec:methodology} details our experimental design and implementation. \Cref{sec:results} presents the empirical results with quantitative analysis. \Cref{sec:discussion} interprets the crossover phenomenon and its practical implications. \Cref{sec:conclusion} concludes with recommendations and future work.

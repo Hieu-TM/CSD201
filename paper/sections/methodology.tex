@@ -1,0 +1,142 @@
+\section{Methodology}
+\label{sec:methodology}
+
+This section describes the implementation of both data structures, the benchmark framework, and the experimental setup.
+
+\subsection{Implementation Details}
+\label{subsec:implementation}
+
+Both data structures are implemented from scratch in Java (no external libraries), adhering to the curriculum requirements of CSD201.
+
+\subsubsection{Hash Table with Separate Chaining (\texttt{HashTableSC})}
+
+Our Hash Table uses an array of singly-linked lists for collision resolution. Key design decisions include:
+\begin{itemize}[nosep]
+    \item \textbf{Prime-sized table}: The table capacity is always set to the next prime $\geq n$, improving hash distribution under modular compression~\citep{cormen2022}.
+    \item \textbf{Load factor threshold}: Dynamic resizing triggers when $\alpha > 0.75$, doubling the capacity to the next prime.
+    \item \textbf{Hash function}: Java's \texttt{String.hashCode()} with bitmask (\texttt{\& 0x7FFFFFFF}) to ensure non-negative indices.
+    \item \textbf{Head insertion}: New nodes are prepended to the chain in $O(1)$ time.
+\end{itemize}
+
+\subsubsection{Bloom Filter (\texttt{BloomFilter})}
+
+The Bloom Filter uses a \texttt{boolean[]} array of $m$ bits with $k = 7$ hash functions generated via double hashing~(\Cref{eq:doublehash}):
+\begin{itemize}[nosep]
+    \item \textbf{Primary hash} $h_1$: Java's \texttt{String.hashCode()} with bitmask.
+    \item \textbf{Secondary hash} $h_2$: FNV-1a algorithm~\citep{carter1979} with forced odd output to ensure full-period coverage.
+    \item \textbf{Parameters}: Computed dynamically using \Cref{eq:optimal_m,eq:optimal_k} with target $p = 0.01$.
+\end{itemize}
+
+\Cref{alg:bf_lookup} shows the lookup procedure.
+
+\begin{algorithm}[t]
+\caption{Bloom Filter Membership Query}
+\label{alg:bf_lookup}
+\begin{algorithmic}[1]
+\Require Key $x$, bit array $B[0..m{-}1]$, hash functions $h_1, h_2$, count $k$
+\Ensure \texttt{true} (probably in set) or \texttt{false} (definitely not)
+\For{$i \gets 0$ \textbf{to} $k - 1$}
+    \State $\mathit{pos} \gets (h_1(x) + i \cdot h_2(x)) \bmod m$
+    \If{$B[\mathit{pos}] = 0$}
+        \State \Return \texttt{false} \Comment{Definitely not in set}
+    \EndIf
+\EndFor
+\State \Return \texttt{true} \Comment{Probably in set}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Benchmark Framework}
+\label{subsec:benchmark}
+
+The benchmark framework (\texttt{BenchmarkRunner}) orchestrates the following pipeline for each combination of dataset size $N$ and memory budget $M$:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Load}: Parse the JSON dataset containing $N$ unique username strings.
+    \item \textbf{Insert}: Measure wall-clock time to insert all $N$ elements.
+    \item \textbf{Warm-up}: Perform 2 warm-up iterations of the lookup workload to stabilize JIT compilation.
+    \item \textbf{Lookup}: Time $N$ mixed queries (50\% positive, 50\% negative) and compute throughput.
+    \item \textbf{FPR Measurement} (Bloom Filter only): Execute 5{,}000 guaranteed-negative queries and count false positives.
+    \item \textbf{Memory}: Record estimated memory consumption via structural analysis.
+\end{enumerate}
+
+Garbage collection is forced (\texttt{System.gc()}) between runs to minimize cross-contamination.
+
+\subsection{Experimental Configuration}
+\label{subsec:config}
+
+\Cref{tab:config} summarizes the experimental parameters. The JVM flag \texttt{-Xmx} enforces a hard heap ceiling, causing an \texttt{OutOfMemoryError} when the budget is exceeded.
+
+\begin{table}[t]
+\centering
+\caption{Experimental Configuration}
+\label{tab:config}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Language \& Runtime      & Java (OpenJDK), single-threaded \\
+Memory Budgets $M$       & 16, 32, 64, 128, 256~MB (\texttt{-Xmx}) \\
+Dataset Sizes $N$        & 1K, 5K, 10K, 25K, 50K, 100K, 250K, 500K, 1M, 2M \\
+Data Format              & JSON arrays of unique username strings \\
+Hash Table Load Factor   & $\alpha_{\max} = 0.75$ (auto-resize) \\
+Hash Table Capacity      & Next prime $\geq N$ \\
+Bloom Filter Target FPR  & $p = 0.01$ (1\%) \\
+Bloom Filter Hash Count  & $k = 7$ (computed from~\Cref{eq:optimal_k}) \\
+Lookup Workload          & $N$ mixed queries (50\% positive / 50\% negative) \\
+FPR Test Queries         & 5{,}000 guaranteed-negative strings \\
+Warm-up Iterations       & 2 (for JIT stabilization) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% Figure 1: System Architecture Diagram
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.5cm,
+    box/.style={draw, rounded corners=3pt, minimum height=0.9cm, minimum width=2.2cm, font=\small, align=center, thick},
+    arrow/.style={-{Stealth[length=3mm]}, thick}
+]
+
+% Dataset
+\node[box, fill=lightgray] (data) {JSON Dataset\\$N$ usernames};
+
+% Insert phase
+\node[box, fill=htblue!20, right=1.8cm of data] (insert) {Insert Phase\\Timer};
+
+% Fork
+\node[box, fill=htblue!30, above right=0.8cm and 1.8cm of insert] (ht) {Hash Table\\(Separate Chain)};
+\node[box, fill=bfgreen!30, below right=0.8cm and 1.8cm of insert] (bf) {Bloom Filter\\($k{=}7$, $m$ bits)};
+
+% Lookup
+\node[box, fill=htblue!20, right=1.8cm of ht] (htlook) {Lookup\\$N$ queries};
+\node[box, fill=bfgreen!20, right=1.8cm of bf] (bflook) {Lookup\\$N$ queries};
+
+% Metrics
+\node[box, fill=warnorg!20, right=4.2cm of insert] (metrics) {Metrics\\Collector};
+
+% Results
+\node[box, fill=oomred!15, right=1.5cm of metrics] (csv) {CSV\\Output};
+
+% Arrows
+\draw[arrow] (data) -- (insert);
+\draw[arrow] (insert) |- (ht);
+\draw[arrow] (insert) |- (bf);
+\draw[arrow] (ht) -- (htlook);
+\draw[arrow] (bf) -- (bflook);
+\draw[arrow] (htlook) -| (metrics);
+\draw[arrow] (bflook) -| (metrics);
+\draw[arrow] (metrics) -- (csv);
+
+% Labels
+\node[font=\scriptsize, above=0.05cm of ht, text=htblue] {Exact};
+\node[font=\scriptsize, below=0.05cm of bf, text=bfgreen] {Probabilistic};
+
+% Memory constraint box
+\draw[dashed, thick, oomred] ([xshift=-0.3cm, yshift=0.8cm]ht.north west) rectangle ([xshift=0.3cm, yshift=-0.8cm]bf.south east);
+\node[font=\scriptsize\bfseries, text=oomred, anchor=south] at ([yshift=0.85cm]$(ht.north west)!0.5!(bf.north east)$) {JVM -Xmx $M$~MB};
+
+\end{tikzpicture}
+\caption{Benchmark system architecture. Each dataset--budget combination runs the insert--lookup pipeline for both data structures under a hard JVM memory ceiling. Metrics (throughput, memory, FPR, collisions) are collected and exported to CSV.}
+\label{fig:architecture}
+\end{figure}

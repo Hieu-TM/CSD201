@@ -1,0 +1,18 @@
+{
+  "type": "url",
+  "description": "URLs for blacklist/spam-filter check",
+  "n": 10000,
+  "sample_10_items": [
+    "https://hack.cc/oxvv4dp3rq/xdbwrnpr3f",
+    "https://hack.cc/dngfmavyf/69llxyr5dt",
+    "https://virus.io/qt5t3u",
+    "https://virus.io/n9wa41ksog/kt2n4",
+    "https://spam.org/qfbkhvj",
+    "https://bad.com/w84mp/qela",
+    "https://evil.net/d6r1smx/8vg8dv62/dd7b6",
+    "https://virus.io/8qnams/nrq142dug/jweph",
+    "https://hack.cc/sz59p/k1hal52q0",
+    "https://spam.org/fb8iq/qgrucplh/og59t"
+  ],
+  "avg_bytes_per_item": 37
+}

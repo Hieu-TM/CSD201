@@ -1,0 +1,10 @@
+*.class
+out/
+bin/
+.idea/
+.claude/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+*.log

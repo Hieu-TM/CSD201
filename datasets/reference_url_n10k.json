@@ -1,0 +1,18 @@
+{
+  "type": "url",
+  "description": "URL strings (~65B)",
+  "avg_bytes_per_elem": 65,
+  "n": 10000,
+  "sample_10": [
+    "https://virus.io/kbzut5k",
+    "https://phish.biz/l24jp8zh/-gb/h9chw6bns",
+    "https://virus.io/nuiamp25l/w-4ruhtm0z/30xq",
+    "https://phish.biz/cjdvh/2up0l5",
+    "https://evil.net/2ci/p5py/kuo-oik6o",
+    "https://malware.ru/r9cmgylom",
+    "https://spam.org/-sz2roz",
+    "https://virus.io/ptm3/arw5/mx1xk4l4g",
+    "https://phish.biz/cwoir8qn92/4hqhhvtdy0",
+    "https://malware.ru/6vf/mzz/r2nfm4"
+  ]
+}

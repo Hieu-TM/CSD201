@@ -1,0 +1,18 @@
+{
+  "type": "integer_id",
+  "description": "Transaction IDs for idempotency check",
+  "n": 10000,
+  "sample_10_items": [
+    1000177665,
+    1000013829,
+    1000079366,
+    1000112135,
+    1000177673,
+    1000046605,
+    1000177678,
+    1000079376,
+    1000046610,
+    1000046611
+  ],
+  "avg_bytes_per_item": 10
+}

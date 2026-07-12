@@ -1,0 +1,18 @@
+{
+  "type": "username",
+  "description": "Username strings (~12B)",
+  "avg_bytes_per_elem": 12,
+  "n": 10000,
+  "sample_10": [
+    "4r70u92mx8x",
+    "maxrain1429",
+    "acehawk9491",
+    "vw5cpzka",
+    "bigrock8604",
+    "fastsnow3586",
+    "u7985035",
+    "u1999539",
+    "uaqci7w",
+    "u98328100"
+  ]
+}

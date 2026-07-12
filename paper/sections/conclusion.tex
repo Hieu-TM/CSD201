@@ -1,0 +1,34 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has presented a systematic empirical study of the \emph{Performance Crossover Point} between Hash Table (Separate Chaining) and Bloom Filter under strict, quantified memory constraints. Our findings directly answer the research question posed in~\Cref{subsec:rq}:
+
+\begin{enumerate}[label=\textbf{(\arabic*)}]
+    \item \textbf{Crossover identification}: For each memory budget $M$, we identified the critical dataset size $N$ at which the Hash Table exhausts available memory and fails with an \texttt{OutOfMemoryError}. At $M = 64$~MB, this occurs at $N \geq 1{,}000{,}000$; at $M = 128$~MB, at $N \geq 2{,}000{,}000$. The crossover follows the predictable relationship $N_{\max}^{\text{HT}} \approx M / 100$ bytes.
+
+    \item \textbf{Memory compression}: The Bloom Filter achieves a consistent $\mathbf{83.5\times}$ memory reduction compared to the Hash Table, consuming only ${\approx}1.2$ bytes per element versus ${\approx}100$ bytes. At $N = 2{,}000{,}000$, this translates to 2.3~MB versus 191~MB.
+
+    \item \textbf{FPR validation}: The empirical false positive rate of $0.84\%$--$1.38\%$ closely matches the theoretical target of $1.00\%$, validating the Mitzenmacher optimal parameter formula and the Kirsch--Mitzenmacher double hashing technique. No false negatives were observed.
+
+    \item \textbf{Throughput stability}: While the Hash Table achieves higher peak throughput (up to 21~million ops/sec) when memory is abundant, the Bloom Filter maintains \emph{stable} throughput (7--14~million ops/sec) across all tested scales, unaffected by GC pressure.
+\end{enumerate}
+
+\subsection{Recommendations}
+
+Based on our analysis, we recommend:
+\begin{itemize}[nosep]
+    \item \textbf{Use Hash Tables} when the dataset is small ($N \ll M / 100$), exact answers are required, or value retrieval (key-value mapping) is needed.
+    \item \textbf{Use Bloom Filters} when the dataset approaches or exceeds the memory ceiling, when only existence queries are needed, and when a ${\leq}1\%$ false positive rate is acceptable.
+    \item \textbf{Use both in combination}: Deploy the Bloom Filter as a \emph{pre-filter} layer in front of a Hash Table or database. The Bloom Filter rejects 99\% of true negatives before they reach the expensive exact-match structure, achieving the best of both worlds.
+\end{itemize}
+
+\subsection{Future Work}
+
+Several directions merit further investigation:
+\begin{itemize}[nosep]
+    \item \textbf{Multi-trial averaging}: Running multiple benchmark trials per configuration to reduce throughput variance and compute confidence intervals.
+    \item \textbf{Alternative Bloom Filter variants}: Evaluating Counting Bloom Filters (supporting deletion), Cuckoo Filters~\citep{fan2014}, and Compressed Bloom Filters for additional space savings.
+    \item \textbf{Concurrent benchmarking}: Testing thread-safe implementations (e.g., \texttt{ConcurrentHashMap}) under multi-threaded workloads to study the impact of lock contention.
+    \item \textbf{Non-uniform key distributions}: Measuring performance under Zipfian, adversarial, and real-world (e.g., URL, email) key distributions.
+    \item \textbf{Disk-backed scenarios}: Extending the benchmark to include LSM-tree architectures where Bloom Filters serve as the first-level filter before disk I/O, as in Bigtable~\citep{chang2008} and LevelDB.
+\end{itemize}
