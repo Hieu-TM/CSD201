@@ -1,41 +1,31 @@
-/**
- * Data class to store benchmark results for a single run.
- * Used by BenchmarkRunner to collect and export results.
- */
 public class BenchmarkResult {
 
-    // ─── Common fields ─────────────────────────────────
-    public String dataStructure;       // "HashTable" or "BloomFilter"
-    public int n;                      // Dataset size
-    public int memoryBudgetMb;         // JVM Max Memory limit (MB)
-    public double insertTimeMs;        // Total insert time (milliseconds)
-    public double lookupTimeMs;        // Total lookup time (milliseconds)
-    public double throughputOpsPerSec; // Lookup operations per second (median-based)
-    public double throughputStdevPct;  // Throughput variability across timed passes (%)
-    public long memoryBytes;           // Real measured heap footprint (Runtime delta, bytes)
-    public long memoryModelBytes;      // Analytic model footprint, for cross-check (bytes)
-    public boolean isOOM;              // Whether OutOfMemoryError occurred
+    public String dataStructure;
+    public int n;
+    public int memoryBudgetMb;
+    public double insertTimeMs;
+    public double lookupTimeMs;
+    public double throughputOpsPerSec;
+    public double throughputStdevPct;
+    public long memoryBytes;
+    public long memoryModelBytes;
+    public boolean isOOM;
 
-    // ─── Hash Table specific ───────────────────────────
-    public int collisionCount;         // Total collisions during insert
-    public double collisionRate;       // collisionCount / n
-    public int maxChainLength;         // Longest chain in any bucket
-    public double avgChainLength;      // Average chain length (non-empty buckets)
-    public int tableCapacity;          // Final table capacity
-    public int resizeCount;            // Number of resizes performed
+    public int collisionCount;
+    public double collisionRate;
+    public int maxChainLength;
+    public double avgChainLength;
+    public int tableCapacity;
+    public int resizeCount;
 
-    // ─── Bloom Filter specific ─────────────────────────
-    public int mBits;                  // Number of bits in bit array
-    public int kHashes;                // Number of hash functions
-    public double fprEmpirical;        // Measured false positive rate
-    public double fprTheoretical;      // Theoretical FPR
-    public int falsePositiveCount;     // Number of false positives detected
-    public int negativeQueryCount;     // Number of negative queries tested
-    public double fillRatio;           // Fraction of bits set
+    public int mBits;
+    public int kHashes;
+    public double fprEmpirical;
+    public double fprTheoretical;
+    public int falsePositiveCount;
+    public int negativeQueryCount;
+    public double fillRatio;
 
-    /**
-     * Format this result as a CSV header line for Hash Table.
-     */
     public static String htCsvHeader() {
         return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
                "memory_bytes,memory_kb,memory_model_kb," +
@@ -43,9 +33,6 @@ public class BenchmarkResult {
                "table_capacity,resize_count,is_oom";
     }
 
-    /**
-     * Format this result as a CSV data line for Hash Table.
-     */
     public String htCsvLine() {
         return String.format("%d,%d,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%.1f,%d,%.4f,%d,%.2f,%d,%d,%b",
                 memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,
@@ -54,9 +41,6 @@ public class BenchmarkResult {
                 tableCapacity, resizeCount, isOOM);
     }
 
-    /**
-     * Format this result as a CSV header line for Bloom Filter.
-     */
     public static String bfCsvHeader() {
         return "memory_budget_mb,n,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
                "memory_bytes,memory_kb,memory_model_kb," +
@@ -64,9 +48,6 @@ public class BenchmarkResult {
                "false_positive_count,negative_query_count,fill_ratio,is_oom";
     }
 
-    /**
-     * Format this result as a CSV data line for Bloom Filter.
-     */
     public String bfCsvLine() {
         return String.format("%d,%d,%.2f,%.2f,%.0f,%.1f,%d,%.1f,%.1f,%d,%d,%.6f,%.6f,%d,%d,%.4f,%b",
                 memoryBudgetMb, n, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,
@@ -75,17 +56,11 @@ public class BenchmarkResult {
                 falsePositiveCount, negativeQueryCount, fillRatio, isOOM);
     }
 
-    /**
-     * Format this result as a summary CSV header.
-     */
     public static String summaryCsvHeader() {
         return "memory_budget_mb,n,structure,insert_time_ms,lookup_time_ms,throughput_ops_sec,throughput_stdev_pct," +
                "memory_kb,collision_rate,fpr_empirical,is_oom";
     }
 
-    /**
-     * Format this result as a summary CSV line.
-     */
     public String summaryCsvLine() {
         return String.format("%d,%d,%s,%.2f,%.2f,%.0f,%.1f,%.1f,%.4f,%.6f,%b",
                 memoryBudgetMb, n, dataStructure, insertTimeMs, lookupTimeMs, throughputOpsPerSec, throughputStdevPct,

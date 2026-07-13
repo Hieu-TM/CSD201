@@ -8,3 +8,11 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
+
+# Ignore presentation scripts and slides
+Kich_ban_thuyet_trinh_*.docx
+RBL_Presentation.pptx
+presentation.md
+~$*.pptx
+~$*.docx
+scratch_pptx/
